@@ -8,12 +8,14 @@ List every discrete decision or action in your agent's workflow, then score each
 
 | Decision / action | Reversibility (H/M/L) | Blast radius (H/M/L) | Measurability (H/M/L) | Above / Below | HITL? |
 |---|---|---|---|---|---|
-| _Pull project state + recent GitHub/Jira activity_ | H | L | H | Below | · |
-| _Draft the weekly leadership status update_ | H | M | M | Below | spot-check |
-| _Propose next sprint's stories from the PRD (within cap)_ | M | M | M | Below | spot-check |
-| _Post the update to a channel / commit a ship date_ | L | H | M | Above | required |
-| _Mark a launch gate green / merge or close a ticket_ | L | H | M | Above | required |
-| _…_ | | | | | |
+| Identify the target project and requested deliverables from the inbound task brief | | | | | |
+| Look up the project record (status, flags, linked PRD) | | | | | |
+| Pull recent engineering activity (merged PRs, open issues, Sev-1s) | | | | | |
+| Search past updates for tone and precedent | | | | | |
+| Load team norms / PM playbook | | | | | |
+| Draft the weekly leadership status update grounded in pulled data | | | | | |
+| Queue next-sprint story proposals within the auto-queue cap | | | | | |
+| Post the approved update to leadership / commit a public ship date | | | | | |
 
 ## Agent anatomy (sketch)
 
