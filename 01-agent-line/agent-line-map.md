@@ -17,6 +17,17 @@ List every discrete decision or action in your agent's workflow, then score each
 | Queue next-sprint story proposals within the auto-queue cap |H |L |M | Below | Yes |
 | Post the approved update to leadership / commit a public ship date |L |H |H | Above | |
 
+## One-line justifications
+
+- Identify the target project and requested deliverables from the inbound task brief sits Below the line because its reversibility is High, its blast radius is Low, and its measurability is High; the deciding factor is measurability.
+- Look up the project record (status, flags, linked PRD) sits Below the line because its reversibility is High, its blast radius is Low, and its measurability is High; the deciding factor is measurability.
+- Pull recent engineering activity (merged PRs, open issues, Sev-1s) sits Below the line with an HITL checkpoint because its reversibility is Medium, its blast radius is Low, and its measurability is Medium; human approval is required because reversibility and measurability are only medium and incomplete activity pulls need a spot-check.
+- Search past updates for tone and precedent sits Below the line with an HITL checkpoint because its reversibility is High, its blast radius is Low, and its measurability is Medium; human approval is required because relevance and tone fit are only partially measurable.
+- Load team norms / PM playbook sits Below the line with an HITL checkpoint because its reversibility is High, its blast radius is Low, and its measurability is Medium; human approval is required because choosing the right norm for the situation is only partially measurable.
+- Draft the weekly leadership status update grounded in pulled data sits Above the line because its reversibility is High, its blast radius is Low, and its measurability is Low; the deciding factor is measurability.
+- Queue next-sprint story proposals within the auto-queue cap sits Below the line with an HITL checkpoint because its reversibility is High, its blast radius is Low, and its measurability is Medium; human approval is required because story quality and prioritization are only partially measurable.
+- Post the approved update to leadership / commit a public ship date sits Above the line because its reversibility is Low, its blast radius is High, and its measurability is High; the deciding factor is blast radius.
+
 ## Agent anatomy (sketch)
 
 - **Model:** _your default fast model + when you escalate to a frontier model, and why_
