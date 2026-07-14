@@ -8,14 +8,14 @@ List every discrete decision or action in your agent's workflow, then score each
 
 | Decision / action | Reversibility (H/M/L) | Blast radius (H/M/L) | Measurability (H/M/L) | Above / Below | HITL? |
 |---|---|---|---|---|---|
-| Identify the target project and requested deliverables from the inbound task brief |H |L |H | | |
-| Look up the project record (status, flags, linked PRD) |H |L |H | | |
-| Pull recent engineering activity (merged PRs, open issues, Sev-1s) |M |L |M | | |
-| Search past updates for tone and precedent |H |L |M | | |
-| Load team norms / PM playbook |H |L |M | | |
-| Draft the weekly leadership status update grounded in pulled data |H |L |L | | |
-| Queue next-sprint story proposals within the auto-queue cap |H |L |M | | |
-| Post the approved update to leadership / commit a public ship date |L |H |H | | |
+| Identify the target project and requested deliverables from the inbound task brief |H |L |H | Below | |
+| Look up the project record (status, flags, linked PRD) |H |L |H | Below | |
+| Pull recent engineering activity (merged PRs, open issues, Sev-1s) |M |L |M | Below | Yes |
+| Search past updates for tone and precedent |H |L |M | Below | Yes |
+| Load team norms / PM playbook |H |L |M | Below | Yes |
+| Draft the weekly leadership status update grounded in pulled data |H |L |L | Above | |
+| Queue next-sprint story proposals within the auto-queue cap |H |L |M | Below | Yes |
+| Post the approved update to leadership / commit a public ship date |L |H |H | Above | |
 
 ## Agent anatomy (sketch)
 
