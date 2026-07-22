@@ -5,8 +5,16 @@
 ## 1. Context budget
 
 _What does each loop iteration actually receive, and why? (You can't fit everything, what's the priority order?)_
-to remember: previous decisions, which emails processed
-to forget: email draft, notes
+Gets:
+- Current user request
+- Selected Gmail thread
+- Retrieved recruiter emails
+- Job-search preferences
+
+Avoids:
+- Entire mailbox
+- Old unrelated threads
+- Previous drafts
 
 ## 2. Retrieve vs. long-context: per source
 
