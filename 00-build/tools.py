@@ -17,6 +17,11 @@ import json
 import os
 from pathlib import Path
 
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+
 FIXTURES = Path(__file__).parent / "fixtures"
 
 # Commitment bound (M5). A run that tries to queue more than this many backlog
@@ -24,6 +29,95 @@ FIXTURES = Path(__file__).parent / "fixtures"
 # would justify more. Auto-committing a flood of "real" work is the money analog.
 MAX_QUEUE_ITEMS = int(os.environ.get("CORTEX_MAX_QUEUE_ITEMS", "10"))
 
+GMAIL_SCOPE = ["https://www.googleapis.com/auth/gmail.readonly"]
+CREDENTIALS_FILE = Path(__file__).parent / "credentials.json"
+TOKEN_FILE = Path(__file__).parent / "token.json"
+
+
+def _get_gmail_service():
+    """Authenticate and return a read-only Gmail API service."""
+    credentials = None
+
+    if TOKEN_FILE.exists():
+        credentials = Credentials.from_authorized_user_file(
+            TOKEN_FILE,
+            GMAIL_SCOPE,
+        )
+
+    if credentials and credentials.expired and credentials.refresh_token:
+        credentials.refresh(Request())
+
+    if not credentials or not credentials.valid:
+        if not CREDENTIALS_FILE.exists():
+            raise FileNotFoundError(
+                f"Missing Gmail credentials file: {CREDENTIALS_FILE}"
+            )
+
+        flow = InstalledAppFlow.from_client_secrets_file(
+            CREDENTIALS_FILE,
+            GMAIL_SCOPE,
+        )
+        credentials = flow.run_local_server(port=0)
+
+    TOKEN_FILE.write_text(credentials.to_json())
+
+    return build("gmail", "v1", credentials=credentials)
+
+
+def count_gmail_messages(query: str, newer_than_days: int = 60) -> dict:
+    """Count Gmail messages matching a query within the selected period.
+
+    This tool is strictly read-only. It cannot send, delete, move, label,
+    or modify email.
+    """
+    query = str(query or "").strip()
+
+    if not query:
+        return {"error": "query_required"}
+
+    try:
+        days = int(newer_than_days)
+    except (TypeError, ValueError):
+        return {"error": "invalid_newer_than_days"}
+
+    if days < 1 or days > 3650:
+        return {
+            "error": "newer_than_days_out_of_range",
+            "allowed": "1-3650",
+        }
+
+    gmail_query = f'newer_than:{days}d "{query}"'
+    service = _get_gmail_service()
+
+    count = 0
+    page_token = None
+
+    while True:
+        response = (
+            service.users()
+            .messages()
+            .list(
+                userId="me",
+                q=gmail_query,
+                pageToken=page_token,
+                maxResults=500,
+            )
+            .execute()
+        )
+
+        count += len(response.get("messages", []))
+        page_token = response.get("nextPageToken")
+
+        if not page_token:
+            break
+
+    return {
+        "query": query,
+        "newer_than_days": days,
+        "gmail_query": gmail_query,
+        "count": count,
+        "access": "read_only",
+    }
 
 def _load_json(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text())
@@ -135,4 +229,5 @@ TOOLS = {
     "get_roadmap": get_roadmap,
     "get_norms": get_norms,
     "propose_stories": propose_stories,
+    "count_gmail_messages": count_gmail_messages,
 }

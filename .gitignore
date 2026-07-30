@@ -20,3 +20,6 @@ __pycache__/
 *.local.json
 /traces/
 /runs/
+
+00-build/credentials.json
+00-build/token.json
