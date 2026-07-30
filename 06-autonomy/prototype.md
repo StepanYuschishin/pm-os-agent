@@ -15,6 +15,7 @@ _One paragraph: the agent in action, end to end._
 
 ## Screenshots (required, collected M2 to M6)
 
+
 Real screenshots of *your* Cortex running. These are the `00-build/CORTEX-ANATOMY.md` set and they are required, a link alone is not enough.
 
 | # | Screenshot | What it shows | From |

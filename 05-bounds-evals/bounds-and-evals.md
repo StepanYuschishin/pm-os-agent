@@ -12,7 +12,7 @@
 | **Timeout** | Maximum 90 seconds per run; stop and escalate on timeout | Hung tool calls and stalled execution |
 | **Token / cost budget** | Maximum estimated run cost of $0.5 per run; stop before exceeding the cap | Unexpected cost growth and unbounded model usage |
 | **Auto-queue / commitment cap** | Maximum 10 proposed stories or actions per run; all remain queued for human review | Flooding the backlog and over-committing scope |
-| **Permissions (JIT / ephemeral)** |     Read + draft only; no standing post/merge permissions | Confidential data leakage and unauthorized external actions |
+| **Permissions (JIT / ephemeral)** | Read + draft only; no standing post/merge permissions | Confidential data leakage and unauthorized external actions |
 | **Kill switch** | The user or system operator can stop the run immediately; any bound violation also terminates the run | Continuing after unsafe or abnormal behavior is detected |
 | **HITL checkpoints** | Human approval required for all above-the-line decisions. | Unapproved communication, commitments, or disclosure |
 
@@ -61,15 +61,15 @@ _Which recorded runs become deterministic fixtures you replay on every change?_
 
 Replay these deterministic fixtures after every meaningful change:
 
-- `happy`
+- `happy` (clean successful run)
 
-- `missing-data`
+- `recovery` (temporary tool failure followed by retry/escalation)
 
-- `jailbreak`
+- `missing-data` (grounding / evidence check)
 
-- Iteration-cap run
+- `jailbreak` (prompt-injection refusal)
 
-- Future production traces that uncovered bugs
+- `near-miss` (a previously observed run that almost violated a safety bound)
 
 ## Runaway-loop check
 
