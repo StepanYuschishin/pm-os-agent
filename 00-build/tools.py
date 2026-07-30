@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-
+from datetime import datetime, timedelta, timezone
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -217,6 +217,143 @@ def propose_stories(project_id: str, stories=None, reason: str = "") -> dict:
             "reason": reason,
             "note": "queued for a human to approve, nothing was created in the tracker."}
 
+REJECTION_PHRASES = [
+    "unfortunately",
+    "we decided to move forward with other candidates",
+    "we have decided to move forward with other candidates",
+    "we've decided to move forward with other candidates",
+    "we decided to move forward with another candidate",
+    "we have chosen to move forward with another candidate",
+    "we decided to pursue other candidates",
+    "we will not be moving forward with your application",
+    "we won't be moving forward with your application",
+    "not moving forward with your application",
+    "unable to move forward with your application",
+    "your application was not selected",
+    "we regret to inform you",
+    "other applicants whose experience more closely matches",
+    "other candidates whose experience more closely matches",
+    "not selected for this position",
+    "not selected to move forward",
+    "position has been filled",
+]
+
+APPLICATION_SUBMITTED_PHRASES = [
+    "your application was submitted successfully",
+    "your application has been submitted",
+    "application submitted successfully",
+    "we have received your application",
+    "we've received your application",
+    "your application has been received",
+    "application received",
+    "thank you for submitting your application",
+    "thank you for your application",
+    "thank you for applying",
+]
+
+
+def _gmail_message_ids_for_phrase(
+    service,
+    phrase: str,
+    after_timestamp: int,
+) -> set[str]:
+    """Return unique Gmail message IDs matching one exact phrase."""
+    gmail_query = f'after:{after_timestamp} "{phrase}"'
+
+    message_ids: set[str] = set()
+    page_token = None
+
+    while True:
+        response = (
+            service.users()
+            .messages()
+            .list(
+                userId="me",
+                q=gmail_query,
+                pageToken=page_token,
+                maxResults=500,
+            )
+            .execute()
+        )
+
+        message_ids.update(
+            message["id"]
+            for message in response.get("messages", [])
+        )
+
+        page_token = response.get("nextPageToken")
+
+        if not page_token:
+            break
+
+    return message_ids
+
+
+def count_job_search_emails(
+    start_date: str = "2026-06-22",
+) -> dict:
+    """Count job rejections and application confirmations from a date.
+
+    Gmail access remains strictly read-only. Messages matching multiple
+    phrases are counted only once.
+    """
+    try:
+        parsed_date = datetime.strptime(start_date, "%Y-%m-%d")
+    except ValueError:
+        return {
+            "error": "invalid_start_date",
+            "expected_format": "YYYY-MM-DD",
+        }
+
+    # Midnight in Abu Dhabi, UTC+4.
+    abu_dhabi_timezone = timezone(timedelta(hours=4))
+    start_datetime = parsed_date.replace(tzinfo=abu_dhabi_timezone)
+    after_timestamp = int(start_datetime.timestamp())
+
+    service = _get_gmail_service()
+
+    rejection_ids: set[str] = set()
+    rejection_breakdown = {}
+
+    for phrase in REJECTION_PHRASES:
+        matching_ids = _gmail_message_ids_for_phrase(
+            service,
+            phrase,
+            after_timestamp,
+        )
+        rejection_ids.update(matching_ids)
+        rejection_breakdown[phrase] = len(matching_ids)
+
+    submitted_ids: set[str] = set()
+    submitted_breakdown = {}
+
+    for phrase in APPLICATION_SUBMITTED_PHRASES:
+        matching_ids = _gmail_message_ids_for_phrase(
+            service,
+            phrase,
+            after_timestamp,
+        )
+        submitted_ids.update(matching_ids)
+        submitted_breakdown[phrase] = len(matching_ids)
+
+    # Prevent rejection messages containing phrases such as
+    # "thank you for applying" from being counted as submissions.
+    confirmed_application_ids = submitted_ids - rejection_ids
+
+    return {
+        "start_date": start_date,
+        "timezone": "Asia/Dubai",
+        "rejections": len(rejection_ids),
+        "applications_submitted": len(confirmed_application_ids),
+        "raw_submission_matches": len(submitted_ids),
+        "submission_matches_excluded_as_rejections": len(
+            submitted_ids & rejection_ids
+        ),
+        "rejection_phrase_breakdown": rejection_breakdown,
+        "application_phrase_breakdown": submitted_breakdown,
+        "counting_method": "unique Gmail message IDs",
+        "access": "read_only",
+    }
 
 # Registry the agent loop reads. Add a tool here and the agent can call it.
 # Note what is ABSENT: there is no post_update, no create_issue, no merge_pr,
@@ -230,4 +367,5 @@ TOOLS = {
     "get_norms": get_norms,
     "propose_stories": propose_stories,
     "count_gmail_messages": count_gmail_messages,
+    "count_job_search_emails": count_job_search_emails,
 }
