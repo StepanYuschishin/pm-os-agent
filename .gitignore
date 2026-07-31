@@ -23,3 +23,6 @@ __pycache__/
 
 00-build/credentials.json
 00-build/token.json
+
+# Cortex local scheduler logs
+00-build/*.log
