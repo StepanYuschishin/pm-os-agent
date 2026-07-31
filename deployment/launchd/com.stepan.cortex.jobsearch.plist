@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.stepan.cortex.jobsearch</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/stepanluschyshyn/Documents/GitHub/pm-os-agent/.venv/bin/python</string>
+        <string>/Users/stepanluschyshyn/Documents/GitHub/pm-os-agent/00-build/send_dashboard.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/stepanluschyshyn/Documents/GitHub/pm-os-agent/00-build</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>9</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+
+        <dict>
+            <key>Hour</key>
+            <integer>18</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/stepanluschyshyn/Documents/GitHub/pm-os-agent/00-build/cortex-dashboard.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/stepanluschyshyn/Documents/GitHub/pm-os-agent/00-build/cortex-dashboard-error.log</string>
+</dict>
+</plist>
