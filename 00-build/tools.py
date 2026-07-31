@@ -288,6 +288,46 @@ def _gmail_message_ids_for_phrase(
 
     return message_ids
 
+def _gmail_message_ids_for_phrase_between(
+    service,
+    phrase: str,
+    start_timestamp: int,
+    end_timestamp: int,
+) -> set[str]:
+    """Return unique Gmail message IDs matching a phrase inside a date range."""
+    gmail_query = (
+        f'after:{start_timestamp} '
+        f'before:{end_timestamp} '
+        f'"{phrase}"'
+    )
+
+    message_ids: set[str] = set()
+    page_token = None
+
+    while True:
+        response = (
+            service.users()
+            .messages()
+            .list(
+                userId="me",
+                q=gmail_query,
+                pageToken=page_token,
+                maxResults=500,
+            )
+            .execute()
+        )
+
+        message_ids.update(
+            message["id"]
+            for message in response.get("messages", [])
+        )
+
+        page_token = response.get("nextPageToken")
+
+        if not page_token:
+            break
+
+    return message_ids
 
 def count_job_search_emails(
     start_date: str = "2026-06-22",
@@ -354,6 +394,143 @@ def count_job_search_emails(
         "counting_method": "unique Gmail message IDs",
         "access": "read_only",
     }
+    
+def _count_job_search_emails_between(
+    service,
+    start_datetime: datetime,
+    end_datetime: datetime,
+) -> dict:
+    """Count unique job-search emails inside one specific time period."""
+    start_timestamp = int(start_datetime.timestamp())
+    end_timestamp = int(end_datetime.timestamp())
+
+    rejection_ids: set[str] = set()
+
+    for phrase in REJECTION_PHRASES:
+        rejection_ids.update(
+            _gmail_message_ids_for_phrase_between(
+                service,
+                phrase,
+                start_timestamp,
+                end_timestamp,
+            )
+        )
+
+    submitted_ids: set[str] = set()
+
+    for phrase in APPLICATION_SUBMITTED_PHRASES:
+        submitted_ids.update(
+            _gmail_message_ids_for_phrase_between(
+                service,
+                phrase,
+                start_timestamp,
+                end_timestamp,
+            )
+        )
+
+    confirmed_application_ids = submitted_ids - rejection_ids
+
+    return {
+        "applications_submitted": len(confirmed_application_ids),
+        "rejections": len(rejection_ids),
+    }
+
+def get_job_search_dashboard(
+    start_date: str = "2026-06-22",
+) -> dict:
+    """Build an on-demand job-search dashboard from Gmail.
+
+    Gmail access remains strictly read-only.
+    """
+    abu_dhabi_timezone = timezone(timedelta(hours=4))
+
+    try:
+        baseline_date = datetime.strptime(
+            start_date,
+            "%Y-%m-%d",
+        ).replace(tzinfo=abu_dhabi_timezone)
+    except ValueError:
+        return {
+            "error": "invalid_start_date",
+            "expected_format": "YYYY-MM-DD",
+        }
+
+    now = datetime.now(abu_dhabi_timezone)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday = today - timedelta(days=1)
+    seven_days_ago = today - timedelta(days=7)
+
+    service = _get_gmail_service()
+
+    totals = count_job_search_emails(start_date)
+
+    yesterday_metrics = _count_job_search_emails_between(
+        service,
+        yesterday,
+        today,
+    )
+
+    last_7_days_metrics = _count_job_search_emails_between(
+        service,
+        seven_days_ago,
+        now,
+    )
+
+    return {
+        "dashboard": "Cortex Job Search Dashboard",
+        "generated_at": now.isoformat(),
+        "timezone": "Asia/Dubai",
+        "since": start_date,
+        "totals": {
+            "applications_submitted": totals["applications_submitted"],
+            "rejections": totals["rejections"],
+        },
+        "yesterday": {
+            "date": yesterday.strftime("%Y-%m-%d"),
+            **yesterday_metrics,
+        },
+        "last_7_days": {
+            "from": seven_days_ago.strftime("%Y-%m-%d"),
+            "to": now.strftime("%Y-%m-%d"),
+            **last_7_days_metrics,
+        },
+        "access": "read_only",
+        "note": (
+            "Counts use unique Gmail message IDs and phrase-based "
+            "classification."
+        ),
+    }
+
+
+def format_job_search_dashboard(
+    start_date: str = "2026-06-22",
+) -> str:
+    """Return the job-search dashboard as readable text."""
+    dashboard = get_job_search_dashboard(start_date)
+
+    if "error" in dashboard:
+        return json.dumps(dashboard, indent=2)
+
+    totals = dashboard["totals"]
+    yesterday = dashboard["yesterday"]
+    last_7_days = dashboard["last_7_days"]
+
+    return (
+        "CORTEX JOB SEARCH DASHBOARD\n"
+        "===========================\n\n"
+        f"Since: {dashboard['since']}\n"
+        f"Applications submitted: {totals['applications_submitted']}\n"
+        f"Rejections: {totals['rejections']}\n\n"
+        f"Yesterday ({yesterday['date']}):\n"
+        f"+{yesterday['applications_submitted']} applications\n"
+        f"+{yesterday['rejections']} rejections\n\n"
+        f"Last 7 days ({last_7_days['from']} to "
+        f"{last_7_days['to']}):\n"
+        f"{last_7_days['applications_submitted']} applications\n"
+        f"{last_7_days['rejections']} rejections\n\n"
+        "Access: Gmail read-only\n"
+        "Classification: phrase-based, unique messages"
+    )   
 
 # Registry the agent loop reads. Add a tool here and the agent can call it.
 # Note what is ABSENT: there is no post_update, no create_issue, no merge_pr,
@@ -368,4 +545,6 @@ TOOLS = {
     "propose_stories": propose_stories,
     "count_gmail_messages": count_gmail_messages,
     "count_job_search_emails": count_job_search_emails,
+    "get_job_search_dashboard": get_job_search_dashboard,
+    "format_job_search_dashboard": format_job_search_dashboard,
 }
