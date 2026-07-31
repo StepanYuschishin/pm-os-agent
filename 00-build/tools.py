@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import json
 import os
+import base64
+import time
+from email.message import EmailMessage
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from google.auth.transport.requests import Request
@@ -29,7 +32,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 # would justify more. Auto-committing a flood of "real" work is the money analog.
 MAX_QUEUE_ITEMS = int(os.environ.get("CORTEX_MAX_QUEUE_ITEMS", "10"))
 
-GMAIL_SCOPE = ["https://www.googleapis.com/auth/gmail.readonly"]
+GMAIL_SCOPE = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+]
 CREDENTIALS_FILE = Path(__file__).parent / "credentials.json"
 TOKEN_FILE = Path(__file__).parent / "token.json"
 
@@ -63,6 +69,26 @@ def _get_gmail_service():
 
     return build("gmail", "v1", credentials=credentials)
 
+def _execute_gmail_request(
+    request,
+    attempts: int = 3,
+    delay_seconds: int = 5,
+):
+    """Execute a Gmail API request with retries for temporary network timeouts."""
+    last_error = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return request.execute()
+        except TimeoutError as error:
+            last_error = error
+
+            if attempt == attempts:
+                raise
+
+            time.sleep(delay_seconds)
+
+    raise last_error
 
 def count_gmail_messages(query: str, newer_than_days: int = 60) -> dict:
     """Count Gmail messages matching a query within the selected period.
@@ -93,7 +119,7 @@ def count_gmail_messages(query: str, newer_than_days: int = 60) -> dict:
     page_token = None
 
     while True:
-        response = (
+        response = _execute_gmail_request(
             service.users()
             .messages()
             .list(
@@ -102,8 +128,14 @@ def count_gmail_messages(query: str, newer_than_days: int = 60) -> dict:
                 pageToken=page_token,
                 maxResults=500,
             )
-            .execute()
         )
+
+        count += len(response.get("messages", []))
+        page_token = response.get("nextPageToken")
+
+        if not page_token:
+            break   
+
 
         count += len(response.get("messages", []))
         page_token = response.get("nextPageToken")
@@ -264,7 +296,7 @@ def _gmail_message_ids_for_phrase(
     page_token = None
 
     while True:
-        response = (
+        response = _execute_gmail_request(
             service.users()
             .messages()
             .list(
@@ -273,7 +305,6 @@ def _gmail_message_ids_for_phrase(
                 pageToken=page_token,
                 maxResults=500,
             )
-            .execute()
         )
 
         message_ids.update(
@@ -287,6 +318,7 @@ def _gmail_message_ids_for_phrase(
             break
 
     return message_ids
+
 
 def _gmail_message_ids_for_phrase_between(
     service,
@@ -305,7 +337,7 @@ def _gmail_message_ids_for_phrase_between(
     page_token = None
 
     while True:
-        response = (
+        response = _execute_gmail_request(
             service.users()
             .messages()
             .list(
@@ -314,7 +346,6 @@ def _gmail_message_ids_for_phrase_between(
                 pageToken=page_token,
                 maxResults=500,
             )
-            .execute()
         )
 
         message_ids.update(
@@ -394,7 +425,7 @@ def count_job_search_emails(
         "counting_method": "unique Gmail message IDs",
         "access": "read_only",
     }
-    
+
 def _count_job_search_emails_between(
     service,
     start_datetime: datetime,
@@ -532,6 +563,48 @@ def format_job_search_dashboard(
         "Classification: phrase-based, unique messages"
     )   
 
+def email_job_search_dashboard(
+    recipient: str,
+    start_date: str = "2026-06-22",
+) -> dict:
+    """Generate the dashboard and email it to the selected recipient."""
+    recipient = str(recipient or "").strip()
+
+    if not recipient or "@" not in recipient:
+        return {"error": "valid_recipient_required"}
+
+    dashboard_text = format_job_search_dashboard(start_date)
+    subject = "Cortex Job Search Dashboard"
+
+    message = EmailMessage()
+    message["To"] = recipient
+    message["From"] = "me"
+    message["Subject"] = subject
+    message.set_content(dashboard_text)
+
+    encoded_message = base64.urlsafe_b64encode(
+        message.as_bytes()
+    ).decode("utf-8")
+
+    service = _get_gmail_service()
+
+    sent_message = _execute_gmail_request(
+        service.users()
+        .messages()
+        .send(
+            userId="me",
+            body={"raw": encoded_message},
+        )
+    )
+
+    return {
+        "status": "sent",
+        "recipient": recipient,
+        "subject": subject,
+        "message_id": sent_message.get("id"),
+        "access": "gmail_readonly_and_send",
+    }
+
 # Registry the agent loop reads. Add a tool here and the agent can call it.
 # Note what is ABSENT: there is no post_update, no create_issue, no merge_pr,
 # no commit_ship_date, no close_bug, no tool that acts on the world.
@@ -547,4 +620,5 @@ TOOLS = {
     "count_job_search_emails": count_job_search_emails,
     "get_job_search_dashboard": get_job_search_dashboard,
     "format_job_search_dashboard": format_job_search_dashboard,
+    "email_job_search_dashboard": email_job_search_dashboard,
 }
