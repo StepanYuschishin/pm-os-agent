@@ -17,6 +17,7 @@ import json
 import os
 import base64
 import time
+from openai import OpenAI
 from email.message import EmailMessage
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,8 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -37,8 +40,10 @@ GMAIL_SCOPE = [
     "https://www.googleapis.com/auth/gmail.send",
 ]
 CREDENTIALS_FILE = Path(__file__).parent / "credentials.json"
+OPENAI_MODEL = os.environ.get("CORTEX_CLASSIFIER_MODEL", "gpt-4.1-mini")
 TOKEN_FILE = Path(__file__).parent / "token.json"
-
+REJECTION_REPLIES_FILE = Path(__file__).parent / "rejection-replies.json"
+JOB_SEARCH_CACHE_FILE = Path(__file__).parent / "job-search-classifications.json"
 
 def _get_gmail_service():
     """Authenticate and return a read-only Gmail API service."""
@@ -136,12 +141,6 @@ def count_gmail_messages(query: str, newer_than_days: int = 60) -> dict:
         if not page_token:
             break   
 
-
-        count += len(response.get("messages", []))
-        page_token = response.get("nextPageToken")
-
-        if not page_token:
-            break
 
     return {
         "query": query,
@@ -250,39 +249,622 @@ def propose_stories(project_id: str, stories=None, reason: str = "") -> dict:
             "note": "queued for a human to approve, nothing was created in the tracker."}
 
 REJECTION_PHRASES = [
+     # Direct rejection
     "unfortunately",
+    "we regret to inform you",
+    "we regret",
+    "regrettably",
+    "regretfully",
+    "we are sorry to inform you",
+    "we're sorry to inform you",
+    "we are sorry to let you know",
+    "we're sorry to let you know",
+
+    # Not moving forward
+    "we will not be moving forward",
+    "we won't be moving forward",
+    "we are not moving forward",
+    "we're not moving forward",
+    "not moving forward with your application",
+    "not moving forward with your candidacy",
+    "unable to move forward with your application",
+    "unable to proceed with your application",
+    "not to proceed with your application",
+    "not to proceed with your candidacy",
+    "will not proceed with your application",
+    "will not proceed further",
+    "will not progress your application",
+    "will not progress further",
+
+    # Candidate not selected
+    "your application was not selected",
+    "your application has not been selected",
+    "you were not selected",
+    "you have not been selected",
+    "not selected for this position",
+    "not selected for this role",
+    "not selected to move forward",
+    "not selected for the next stage",
+    "not selected for further consideration",
+    "not shortlisted",
+    "you have not been shortlisted",
+    "we have not shortlisted your application",
+
+    # Other candidate chosen
     "we decided to move forward with other candidates",
     "we have decided to move forward with other candidates",
     "we've decided to move forward with other candidates",
-    "we decided to move forward with another candidate",
-    "we have chosen to move forward with another candidate",
     "we decided to pursue other candidates",
-    "we will not be moving forward with your application",
-    "we won't be moving forward with your application",
-    "not moving forward with your application",
-    "unable to move forward with your application",
-    "your application was not selected",
-    "we regret to inform you",
+    "we have chosen to pursue other candidates",
+    "we have chosen to move forward with another candidate",
+    "we decided to move forward with another candidate",
+    "another candidate has been selected",
+    "another candidate was selected",
+    "we selected another candidate",
+    "we have selected another candidate",
+    "the role has been offered to another candidate",
+    "we have filled the role with another candidate",
+
+    # Stronger match / fit language
     "other applicants whose experience more closely matches",
     "other candidates whose experience more closely matches",
-    "not selected for this position",
-    "not selected to move forward",
+    "other candidates whose qualifications more closely match",
+    "candidates whose experience more closely aligns",
+    "candidates whose background more closely aligns",
+    "we have identified candidates with a closer match",
+    "we are proceeding with candidates who more closely match",
+    "we are moving ahead with candidates who more closely match",
+    "your experience does not match our current requirements",
+    "your background does not match our current requirements",
+    "not the right fit",
+    "not a suitable fit",
+    "not the best fit",
+    "not a match for this role",
+    "not the right match for this position",
+
+    # Position closed / filled / cancelled
     "position has been filled",
+    "the position has been filled",
+    "role has been filled",
+    "the role has been filled",
+    "vacancy has been filled",
+    "this vacancy has been filled",
+    "position is no longer available",
+    "role is no longer available",
+    "vacancy is no longer available",
+    "position has been closed",
+    "role has been closed",
+    "vacancy has been closed",
+    "position has been cancelled",
+    "role has been cancelled",
+    "vacancy has been cancelled",
+    "we are no longer hiring for this position",
+    "we are no longer hiring for this role",
+
+    # Process ended
+    "your application is no longer under consideration",
+    "your candidacy is no longer under consideration",
+    "we will not be progressing your application",
+    "we will not be progressing your candidacy",
+    "we are unable to progress your application",
+    "we are unable to progress your candidacy",
+    "we are unable to offer you the position",
+    "we are unable to offer you the role",
+    "we will not be offering you the position",
+    "we will not be offering you the role",
+
+    # ATS-style wording
+    "application unsuccessful",
+    "your application was unsuccessful",
+    "your application has been unsuccessful",
+    "candidacy unsuccessful",
+    "unsuccessful on this occasion",
+    "we will not be taking your application further",
+    "we will not be taking your candidacy further",
+    "we will not be progressing to the next stage",
+    "we will not invite you to the next stage",
+    "we are unable to invite you to the next stage",
+
+    # Soft rejection wording
+    "we appreciate your interest, however",
+    "thank you for your interest, however",
+    "thank you for applying, however",
+    "after careful consideration",
+    "after reviewing your application",
+    "following careful consideration",
+    "following review of your application",
 ]
 
 APPLICATION_SUBMITTED_PHRASES = [
+    # Direct confirmation
     "your application was submitted successfully",
     "your application has been submitted",
+    "your application was submitted",
     "application submitted successfully",
+    "application has been submitted",
+    "application submitted",
+
+    # Received
     "we have received your application",
     "we've received your application",
+    "we received your application",
     "your application has been received",
+    "your application was received",
     "application received",
+    "application successfully received",
+
+    # Thank-you confirmations
     "thank you for submitting your application",
     "thank you for your application",
     "thank you for applying",
+    "thanks for applying",
+    "thanks for your application",
+    "thank you for applying to",
+    "thanks for applying to",
+
+    # Under review
+    "your application is under review",
+    "your application is now under review",
+    "we are reviewing your application",
+    "we're reviewing your application",
+    "your application will be reviewed",
+    "your application is being reviewed",
+    "your application has been forwarded for review",
+    "your application has been sent for review",
+    "your application has been passed to the hiring team",
+    "your application has been forwarded to the hiring team",
+
+    # Recruiting system acknowledgement
+    "your application has been successfully received",
+    "your application has been successfully submitted",
+    "we have successfully received your application",
+    "we have successfully received your submission",
+    "your submission has been received",
+    "your submission was successful",
+    "submission successful",
+    "application confirmation",
+    "application acknowledgement",
+    "application acknowledgment",
+
+    # Candidate profile / ATS
+    "your candidate profile has been created",
+    "your candidate profile has been received",
+    "your profile has been submitted",
+    "your profile has been received",
+    "your application is now in our system",
+    "your application has been added to our system",
+    "your application is now in our recruitment system",
+    "your application has been added to our recruitment system",
+
+    # Role-specific confirmations
+    "we received your application for",
+    "we have received your application for",
+    "thank you for applying for",
+    "thank you for applying to the",
+    "thanks for applying for",
+    "your application for the position of",
+    "your application for the role of",
+    "your application for this position",
+    "your application for this role",
+
+    # Next-step-neutral confirmation
+    "we will review your application",
+    "our recruitment team will review your application",
+    "our hiring team will review your application",
+    "we will be in touch regarding your application",
+    "we will contact you if your profile matches",
+    "we will contact you regarding next steps",
 ]
 
+def _get_gmail_message_summary(
+    service,
+    message_id: str,
+) -> dict:
+    """Read minimal Gmail metadata for classification."""
+    message = _execute_gmail_request(
+        service.users()
+        .messages()
+        .get(
+            userId="me",
+            id=message_id,
+            format="metadata",
+            metadataHeaders=[
+                "Subject",
+                "From",
+                "Reply-To",
+                "Message-ID",
+                "Date",
+            ],
+        )
+    )
+
+    headers = {
+        header["name"].lower(): header["value"]
+        for header in message.get("payload", {}).get("headers", [])
+    }
+
+    return {
+        "id": message_id,
+        "thread_id": message.get("threadId", ""),
+        "message_id": headers.get("message-id", ""),
+        "subject": headers.get("subject", ""),
+        "from": headers.get("from", ""),
+        "reply_to": headers.get("reply-to", ""),
+        "date": headers.get("date", ""),
+        "snippet": message.get("snippet", ""),
+    }
+
+def _load_rejection_replies() -> dict:
+    """Load record of rejection emails Cortex has already replied to."""
+    if not REJECTION_REPLIES_FILE.exists():
+        return {}
+
+    try:
+        return json.loads(REJECTION_REPLIES_FILE.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def _save_rejection_replies(replies: dict) -> None:
+    """Persist sent rejection-reply records."""
+    REJECTION_REPLIES_FILE.write_text(
+        json.dumps(replies, indent=2)
+    )
+
+def get_replyable_rejections(
+    start_date: str = "2026-06-22",
+) -> dict:
+    """Find AI-classified rejection emails that are safe to reply to."""
+    abu_dhabi_timezone = timezone(timedelta(hours=4))
+
+    try:
+        start_datetime = datetime.strptime(
+            start_date,
+            "%Y-%m-%d",
+        ).replace(tzinfo=abu_dhabi_timezone)
+    except ValueError:
+        return {
+            "error": "invalid_start_date",
+            "expected_format": "YYYY-MM-DD",
+        }
+
+    now = datetime.now(abu_dhabi_timezone)
+    service = _get_gmail_service()
+
+    ai_result = _count_job_search_emails_ai_between(
+        service,
+        start_datetime,
+        now,
+    )
+
+    already_replied = _load_rejection_replies()
+
+    replyable = []
+    skipped_no_reply = []
+    skipped_already_replied = []
+
+    blocked_sender_terms = [
+        "no-reply",
+        "noreply",
+        "do-not-reply",
+        "donotreply",
+        "do_not_reply",
+        "automated",
+        "notification",
+        "notifications",
+        "system@",
+        "support@",
+        "mailer-daemon",
+        "bounce",
+        "successfactors",
+        "myworkday",
+    ]
+
+    for message in ai_result["classified_messages"]:
+        if message.get("label") != "REJECTION":
+            continue
+
+        message_id = message["id"]
+
+        sender = message.get("from", "").lower()
+        reply_to = message.get("reply_to", "").lower()
+
+        effective_reply_address = reply_to or sender
+
+        if "stepan.yuschishin@gmail.com" in effective_reply_address:
+            skipped_no_reply.append(message)
+            continue
+        
+        if message_id in already_replied:
+            skipped_already_replied.append(message)
+            continue
+
+        if any(term in effective_reply_address for term in blocked_sender_terms):
+            skipped_no_reply.append(message)
+            continue
+
+        message["effective_reply_address"] = effective_reply_address
+        replyable.append(message)
+
+    return {
+        "total_rejections": ai_result["rejections"],
+        "replyable": replyable,
+        "replyable_count": len(replyable),
+        "skipped_no_reply_count": len(skipped_no_reply),
+        "skipped_already_replied_count": len(skipped_already_replied),
+        "skipped_no_reply": skipped_no_reply,
+    }
+
+def send_rejection_reply(
+    message_id: str,
+    body_text: str = (
+        "Thanks for letting me know. I appreciate the update and your time. "
+        "Please feel free to keep me in mind for any relevant opportunities "
+        "in the future."
+    ),
+) -> dict:
+    """Reply once to one rejection email inside the existing Gmail thread."""
+    message_id = str(message_id or "").strip()
+
+    if not message_id:
+        return {"error": "message_id_required"}
+
+    already_replied = _load_rejection_replies()
+
+    if message_id in already_replied:
+        return {
+            "status": "skipped",
+            "reason": "already_replied",
+            "message_id": message_id,
+        }
+
+    service = _get_gmail_service()
+    original = _get_gmail_message_summary(service, message_id)
+
+    sender = original.get("from", "")
+    reply_to = original.get("reply_to", "")
+    recipient = reply_to or sender
+
+    blocked_terms = [
+        "no-reply",
+        "noreply",
+        "do-not-reply",
+        "donotreply",
+        "do_not_reply",
+        "automated",
+        "notification",
+        "notifications",
+        "system@",
+        "support@",
+        "mailer-daemon",
+        "bounce",
+    ]
+
+    recipient_lower = recipient.lower()
+
+    if any(term in recipient_lower for term in blocked_terms):
+        return {
+            "status": "skipped",
+            "reason": "blocked_recipient",
+            "recipient": recipient,
+        }
+
+    original_subject = original.get("subject", "").strip()
+
+    if original_subject.lower().startswith("re:"):
+        reply_subject = original_subject
+    else:
+        reply_subject = f"Re: {original_subject}"
+
+    reply = EmailMessage()
+    reply["To"] = recipient
+    reply["From"] = "me"
+    reply["Subject"] = reply_subject
+
+    original_message_header_id = original.get("message_header_id", "")
+
+    if original_message_header_id:
+        reply["In-Reply-To"] = original_message_header_id
+        reply["References"] = original_message_header_id
+
+    reply.set_content(body_text)
+
+    encoded_message = base64.urlsafe_b64encode(
+        reply.as_bytes()
+    ).decode("utf-8")
+
+    sent = _execute_gmail_request(
+        service.users()
+        .messages()
+        .send(
+            userId="me",
+            body={
+                "raw": encoded_message,
+                "threadId": original.get("thread_id"),
+            },
+        )
+    )
+
+    already_replied[message_id] = {
+        "sent_message_id": sent.get("id"),
+        "thread_id": sent.get("threadId"),
+        "recipient": recipient,
+        "subject": reply_subject,
+        "sent_at": datetime.now(
+            timezone(timedelta(hours=4))
+        ).isoformat(),
+    }
+
+    _save_rejection_replies(already_replied)
+
+    return {
+        "status": "sent",
+        "original_message_id": message_id,
+        "sent_message_id": sent.get("id"),
+        "thread_id": sent.get("threadId"),
+        "recipient": recipient,
+        "subject": reply_subject,
+    }
+
+def send_all_replyable_rejections(
+    start_date: str = "2026-06-22",
+    max_batch: int = 20,
+) -> dict:
+    """Send one polite reply to each currently replyable rejection."""
+    discovery = get_replyable_rejections(start_date)
+
+    if "error" in discovery:
+        return discovery
+
+    replyable = discovery["replyable"][:max_batch]
+
+    results = []
+
+    for message in replyable:
+        result = send_rejection_reply(message["id"])
+        results.append({
+            "original_message_id": message["id"],
+            "recipient": message.get("effective_reply_address"),
+            "subject": message.get("subject"),
+            "result": result,
+        })
+
+    sent_count = sum(
+        1 for item in results
+        if item["result"].get("status") == "sent"
+    )
+
+    skipped_count = sum(
+        1 for item in results
+        if item["result"].get("status") == "skipped"
+    )
+
+    return {
+        "status": "completed",
+        "discovered_replyable": discovery["replyable_count"],
+        "attempted": len(replyable),
+        "sent": sent_count,
+        "skipped": skipped_count,
+        "max_batch": max_batch,
+        "results": results,
+    }
+
+def _load_job_search_cache() -> dict:
+    """Load cached job-email classifications."""
+    if not JOB_SEARCH_CACHE_FILE.exists():
+        return {}
+
+    try:
+        return json.loads(JOB_SEARCH_CACHE_FILE.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def _save_job_search_cache(cache: dict) -> None:
+    """Persist job-email classifications."""
+    JOB_SEARCH_CACHE_FILE.write_text(
+        json.dumps(cache, indent=2)
+    )
+
+def _classify_job_email(email_data: dict) -> dict:
+    """Classify one job-search email using an LLM."""
+    client = OpenAI()
+
+    prompt = f"""
+Classify this email into exactly one category.
+
+Categories:
+APPLICATION_CONFIRMATION
+REJECTION
+INTERVIEW
+RECRUITER_REPLY
+OTHER
+
+Definitions:
+
+APPLICATION_CONFIRMATION:
+The email confirms or clearly acknowledges that a job application
+was submitted, received, accepted into the recruiting system, or is now under review.
+
+This includes semantic variants such as:
+- "Thank you for applying"
+- "Thanks for applying"
+- "Thank you for your application"
+- "We received your application"
+- "Your application has been received"
+- "Your application is under review"
+- "We are reviewing your application"
+- "Your application was submitted successfully"
+
+REJECTION:
+The email states that the candidate will not proceed, was not selected,
+another candidate was chosen, the role was filled, the application
+was unsuccessful, or the employer decided not to move forward.
+
+INTERVIEW:
+The email invites the candidate to an interview, assessment,
+screening call, recruiter call, hiring manager call,
+technical interview, or next hiring stage.
+
+RECRUITER_REPLY:
+The email is clearly about a specific job opportunity or application,
+but does not itself confirm submission, rejection, or an interview/next stage.
+
+OTHER:
+Anything unrelated to the user's job search, including:
+- generic job alerts
+- newsletters
+- account verification emails
+- passwords or OTPs
+- visa/admin messages
+- surveys
+- marketing emails
+
+Important classification rules:
+- Base the decision on meaning, not exact phrases.
+- Prefer the most specific hiring-state category.
+- If an email says "thank you for applying" and confirms receipt/review,
+  classify as APPLICATION_CONFIRMATION.
+- If an email says "thank you for applying" but then says the candidate
+  will not move forward, classify as REJECTION.
+- Do not classify newsletters or generic job alerts as applications.
+- Do not classify account creation, password verification, OTP,
+  survey, or visa/admin emails as job applications.
+- Do not infer an application confirmation merely because the email is from a recruiter.
+
+Email:
+
+From: {email_data.get("from", "")}
+Subject: {email_data.get("subject", "")}
+Snippet: {email_data.get("snippet", "")}
+
+Return JSON only:
+
+{{
+  "label": "APPLICATION_CONFIRMATION|REJECTION|INTERVIEW|RECRUITER_REPLY|OTHER",
+  "confidence": 0.0,
+  "reason": "short explanation"
+}}
+
+"""
+
+    response = client.responses.create(
+        model=OPENAI_MODEL,
+        input=prompt,
+    )
+
+    text = response.output_text.strip()
+
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        return {
+            "label": "OTHER",
+            "confidence": 0.0,
+            "reason": "classifier_invalid_json",
+        }
+
+    return result    
 
 def _gmail_message_ids_for_phrase(
     service,
@@ -317,8 +899,7 @@ def _gmail_message_ids_for_phrase(
         if not page_token:
             break
 
-    return message_ids
-
+    return message_ids 
 
 def _gmail_message_ids_for_phrase_between(
     service,
@@ -359,6 +940,132 @@ def _gmail_message_ids_for_phrase_between(
             break
 
     return message_ids
+
+def _count_job_search_emails_ai_between(
+    service,
+    start_datetime: datetime,
+    end_datetime: datetime,
+) -> dict:
+    """Count job-search email categories using semantic classification."""
+    candidate_ids = _get_job_email_candidates_between(
+        service,
+        start_datetime,
+        end_datetime,
+    )
+
+    counts = {
+        "applications_submitted": 0,
+        "rejections": 0,
+        "interviews": 0,
+        "recruiter_replies": 0,
+        "other": 0,
+    }
+
+    classified_messages = []
+
+    cache = _load_job_search_cache()
+    cache_changed = False
+
+    for message_id in candidate_ids:
+        email_data = _get_gmail_message_summary(
+            service,
+            message_id,
+        )
+
+        if message_id in cache:
+            classification = cache[message_id]
+        else:
+            classification = _classify_job_email(email_data)
+            cache[message_id] = classification
+            cache_changed = True
+
+        label = classification.get("label", "OTHER")
+
+        if label == "APPLICATION_CONFIRMATION":
+            counts["applications_submitted"] += 1
+
+        elif label == "REJECTION":
+            counts["rejections"] += 1
+
+        elif label == "INTERVIEW":
+            counts["interviews"] += 1
+
+        elif label == "RECRUITER_REPLY":
+            counts["recruiter_replies"] += 1
+
+        else:
+            counts["other"] += 1
+
+        classified_messages.append(
+            {
+                "id": message_id,
+                "subject": email_data["subject"],
+                "from": email_data["from"],
+                "label": label,
+                "confidence": classification.get("confidence"),
+                "reason": classification.get("reason"),
+            }
+        )
+
+    if cache_changed:
+        _save_job_search_cache(cache)
+
+    return {
+        **counts,
+        "candidate_messages": len(candidate_ids),
+        "classified_messages": classified_messages,
+        "classification_method": "llm_semantic",
+    }
+
+def _get_job_email_candidates_between(
+    service,
+    start_datetime: datetime,
+    end_datetime: datetime,
+) -> set[str]:
+    """Retrieve a broad candidate set of job-search emails."""
+    start_timestamp = int(start_datetime.timestamp())
+    end_timestamp = int(end_datetime.timestamp())
+
+    candidate_queries = [
+        f"after:{start_timestamp} before:{end_timestamp} application",
+        f"after:{start_timestamp} before:{end_timestamp} candidate",
+        f"after:{start_timestamp} before:{end_timestamp} recruiter",
+        f"after:{start_timestamp} before:{end_timestamp} interview",
+        f"after:{start_timestamp} before:{end_timestamp} hiring",
+        f"after:{start_timestamp} before:{end_timestamp} position",
+        f"after:{start_timestamp} before:{end_timestamp} role",
+        f"after:{start_timestamp} before:{end_timestamp} unfortunately",
+    ]
+
+    message_ids: set[str] = set()
+
+    for gmail_query in candidate_queries:
+        page_token = None
+
+        while True:
+            response = _execute_gmail_request(
+                service.users()
+                .messages()
+                .list(
+                    userId="me",
+                    q=gmail_query,
+                    pageToken=page_token,
+                    maxResults=500,
+                )
+            )
+
+            message_ids.update(
+                message["id"]
+                for message in response.get("messages", [])
+            )
+
+            page_token = response.get("nextPageToken")
+
+            if not page_token:
+                break
+
+    return message_ids    
+
 
 def count_job_search_emails(
     start_date: str = "2026-06-22",
@@ -466,6 +1173,51 @@ def _count_job_search_emails_between(
         "rejections": len(rejection_ids),
     }
 
+def get_job_search_quality_report(
+    start_date: str = "2026-06-22",
+) -> dict:
+    """Compare legacy phrase counting with semantic LLM classification."""
+    abu_dhabi_timezone = timezone(timedelta(hours=4))
+
+    try:
+        start_datetime = datetime.strptime(
+            start_date,
+            "%Y-%m-%d",
+        ).replace(tzinfo=abu_dhabi_timezone)
+    except ValueError:
+        return {
+            "error": "invalid_start_date",
+            "expected_format": "YYYY-MM-DD",
+        }
+
+    now = datetime.now(abu_dhabi_timezone)
+
+    service = _get_gmail_service()
+
+    legacy = count_job_search_emails(start_date)
+
+    ai = _count_job_search_emails_ai_between(
+        service,
+        start_datetime,
+        now,
+    )
+
+    return {
+        "start_date": start_date,
+        "legacy_phrase_based": {
+            "applications_submitted": legacy["applications_submitted"],
+            "rejections": legacy["rejections"],
+        },
+        "ai_semantic": {
+            "applications_submitted": ai["applications_submitted"],
+            "rejections": ai["rejections"],
+            "interviews": ai["interviews"],
+            "recruiter_replies": ai["recruiter_replies"],
+        },
+        "candidate_messages": ai["candidate_messages"],
+        "classified_messages": ai["classified_messages"],
+    }
+
 def get_job_search_dashboard(
     start_date: str = "2026-06-22",
 ) -> dict:
@@ -493,15 +1245,19 @@ def get_job_search_dashboard(
 
     service = _get_gmail_service()
 
-    totals = count_job_search_emails(start_date)
+    totals = _count_job_search_emails_ai_between(
+        service,
+        baseline_date,
+        now,
+    )
 
-    yesterday_metrics = _count_job_search_emails_between(
+    yesterday_metrics = _count_job_search_emails_ai_between(
         service,
         yesterday,
         today,
     )
 
-    last_7_days_metrics = _count_job_search_emails_between(
+    last_7_days_metrics = _count_job_search_emails_ai_between(
         service,
         seven_days_ago,
         now,
@@ -527,7 +1283,7 @@ def get_job_search_dashboard(
         },
         "access": "read_only",
         "note": (
-            "Counts use unique Gmail message IDs and phrase-based "
+            "Counts use unique Gmail message IDs and cached AI semantic "
             "classification."
         ),
     }
@@ -560,7 +1316,7 @@ def format_job_search_dashboard(
         f"{last_7_days['applications_submitted']} applications\n"
         f"{last_7_days['rejections']} rejections\n\n"
         "Access: Gmail read-only\n"
-        "Classification: phrase-based, unique messages"
+        "Classification: AI semantic + cache, unique messages"
     )   
 
 def email_job_search_dashboard(
@@ -621,4 +1377,5 @@ TOOLS = {
     "get_job_search_dashboard": get_job_search_dashboard,
     "format_job_search_dashboard": format_job_search_dashboard,
     "email_job_search_dashboard": email_job_search_dashboard,
+    "get_job_search_quality_report": get_job_search_quality_report,
 }
