@@ -26,3 +26,7 @@ __pycache__/
 
 # Cortex local scheduler logs
 00-build/*.log
+# Cortex job-search runtime state
+00-build/job-search-classifications.json
+00-build/job-search-classifications.backup.json
+00-build/rejection-replies.json
