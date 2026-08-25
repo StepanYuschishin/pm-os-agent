@@ -17,7 +17,7 @@ import json
 import os
 import base64
 import time
-from openai import OpenAI
+from openai import OpenAI, APIConnectionError, APITimeoutError, RateLimitError
 from email.message import EmailMessage
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -460,21 +460,14 @@ def _get_gmail_message_summary(
     service,
     message_id: str,
 ) -> dict:
-    """Read minimal Gmail metadata for classification."""
+    """Read Gmail metadata and full text body for classification."""
     message = _execute_gmail_request(
         service.users()
         .messages()
         .get(
             userId="me",
             id=message_id,
-            format="metadata",
-            metadataHeaders=[
-                "Subject",
-                "From",
-                "Reply-To",
-                "Message-ID",
-                "Date",
-            ],
+            format="full",
         )
     )
 
@@ -483,15 +476,68 @@ def _get_gmail_message_summary(
         for header in message.get("payload", {}).get("headers", [])
     }
 
+    def extract_text(payload: dict) -> str:
+        """Extract readable text from plain-text or HTML Gmail MIME payloads."""
+        mime_type = payload.get("mimeType", "")
+        body_data = payload.get("body", {}).get("data")
+
+        if body_data:
+            try:
+                decoded = base64.urlsafe_b64decode(
+                    body_data.encode("utf-8")
+                ).decode("utf-8", errors="replace")
+            except Exception:
+                decoded = ""
+
+            if mime_type == "text/plain":
+                return decoded
+
+            if mime_type == "text/html":
+                import re
+                import html
+
+                text = re.sub(
+                    r"<script.*?</script>",
+                    " ",
+                    decoded,
+                    flags=re.S | re.I,
+                )
+                text = re.sub(
+                    r"<style.*?</style>",
+                    " ",
+                    text,
+                    flags=re.S | re.I,
+                )
+                text = re.sub(r"<[^>]+>", " ", text)
+                text = html.unescape(text)
+                text = re.sub(r"\s+", " ", text)
+
+                return text.strip()
+
+        text_parts = []
+
+        for part in payload.get("parts", []):
+            part_text = extract_text(part)
+
+            if part_text:
+                text_parts.append(part_text)
+
+        return "\n".join(text_parts)
+
+    body = extract_text(
+        message.get("payload", {})
+    ).strip()
+
     return {
         "id": message_id,
         "thread_id": message.get("threadId", ""),
-        "message_id": headers.get("message-id", ""),
+        "message_header_id": headers.get("message-id", ""),
         "subject": headers.get("subject", ""),
         "from": headers.get("from", ""),
         "reply_to": headers.get("reply-to", ""),
         "date": headers.get("date", ""),
         "snippet": message.get("snippet", ""),
+        "body": body,
     }
 
 def _load_rejection_replies() -> dict:
@@ -539,6 +585,12 @@ def get_replyable_rejections(
 
     already_replied = _load_rejection_replies()
 
+    already_replied_thread_ids = {
+        record.get("thread_id")
+        for record in already_replied.values()
+        if record.get("thread_id")
+    }
+
     replyable = []
     skipped_no_reply = []
     skipped_already_replied = []
@@ -558,6 +610,23 @@ def get_replyable_rejections(
         "bounce",
         "successfactors",
         "myworkday",
+        "do not reply",
+        "workday@",
+        "workday.hr@",
+        "workflow.email.",
+        "info@ing.com",
+        "workday.hr",
+    ]
+
+    blocked_subject_terms = [
+        "termination of employment",
+        "collective request",
+        "separation measures",
+        "message replied:",
+        "relocation",
+        "visa",
+        "offboarding",
+        "employment termination",
     ]
 
     for message in ai_result["classified_messages"]:
@@ -566,12 +635,65 @@ def get_replyable_rejections(
 
         message_id = message["id"]
 
+        if message_id in already_replied:
+            skipped_already_replied.append(message)
+            continue
+
+        message_thread_id = message.get("thread_id")
+
+        if (
+            message_thread_id
+            and message_thread_id in already_replied_thread_ids
+        ):
+            skipped_already_replied.append(message)
+            continue
+        
+        confidence = float(message.get("confidence") or 0)
+
+        if confidence < 0.95:
+            skipped_no_reply.append(message)
+            continue
+
+        reason = str(message.get("reason") or "").lower()
+
+        rejection_reason_terms = [
+            "will not proceed",
+            "will not move forward",
+            "not selected",
+            "another candidate",
+            "application was declined",
+            "application declined",
+            "application was unsuccessful",
+            "application unsuccessful",
+            "role was filled",
+            "position was filled",
+            "will not progress",
+            "not progressing",
+            "rejected",
+            "rejection",
+        ]
+
+        if not any(term in reason for term in rejection_reason_terms):
+            skipped_no_reply.append(message)
+            continue
+
+        message_id = message["id"]
+
         sender = message.get("from", "").lower()
         reply_to = message.get("reply_to", "").lower()
+        subject = message.get("subject", "").lower()
 
         effective_reply_address = reply_to or sender
 
         if "stepan.yuschishin@gmail.com" in effective_reply_address:
+            skipped_no_reply.append(message)
+            continue
+
+        if "stepan.yuschishin" in sender:
+            skipped_no_reply.append(message)
+            continue
+
+        if any(term in subject for term in blocked_subject_terms):
             skipped_no_reply.append(message)
             continue
         
@@ -621,9 +743,82 @@ def send_rejection_reply(
     service = _get_gmail_service()
     original = _get_gmail_message_summary(service, message_id)
 
+    original_thread_id = original.get("thread_id", "")
+
+    already_replied_thread_ids = {
+        record.get("thread_id")
+        for record in already_replied.values()
+        if record.get("thread_id")
+    }
+
+    if (
+        original_thread_id
+        and original_thread_id in already_replied_thread_ids
+    ):
+        return {
+            "status": "skipped",
+            "reason": "thread_already_replied",
+            "thread_id": original_thread_id,
+            "message_id": message_id,
+        }
+
+    cache = _load_job_search_cache()
+    classification = cache.get(message_id)
+
+    if not classification:
+        classification = _classify_job_email(original)
+        cache[message_id] = classification
+        _save_job_search_cache(cache)
+
+    if classification.get("label") != "REJECTION":
+        return {
+            "status": "skipped",
+            "reason": "not_classified_as_rejection",
+            "message_id": message_id,
+        }
+
+    confidence = float(classification.get("confidence") or 0)
+
+    if confidence < 0.95:
+        return {
+            "status": "skipped",
+            "reason": "low_rejection_confidence",
+            "confidence": confidence,
+            "message_id": message_id,
+        }
+
     sender = original.get("from", "")
     reply_to = original.get("reply_to", "")
     recipient = reply_to or sender
+
+
+    subject_lower = original.get("subject", "").lower()
+    sender_lower = sender.lower()
+
+    blocked_subject_terms = [
+        "termination of employment",
+        "collective request",
+        "separation measures",
+        "message replied:",
+        "relocation",
+        "visa",
+        "offboarding",
+        "employment termination",
+    ]
+
+    if "stepan.yuschishin" in sender_lower:
+        return {
+            "status": "skipped",
+            "reason": "self_sender",
+            "message_id": message_id,
+        }
+
+    if any(term in subject_lower for term in blocked_subject_terms):
+        return {
+            "status": "skipped",
+            "reason": "blocked_subject",
+            "subject": original.get("subject", ""),
+        }
 
     blocked_terms = [
         "no-reply",
@@ -717,11 +912,11 @@ def send_all_replyable_rejections(
         return discovery
 
     replyable = discovery["replyable"][:max_batch]
-
     results = []
 
     for message in replyable:
         result = send_rejection_reply(message["id"])
+
         results.append({
             "original_message_id": message["id"],
             "recipient": message.get("effective_reply_address"),
@@ -730,12 +925,14 @@ def send_all_replyable_rejections(
         })
 
     sent_count = sum(
-        1 for item in results
+        1
+        for item in results
         if item["result"].get("status") == "sent"
     )
 
     skipped_count = sum(
-        1 for item in results
+        1
+        for item in results
         if item["result"].get("status") == "skipped"
     )
 
@@ -766,9 +963,13 @@ def _save_job_search_cache(cache: dict) -> None:
         json.dumps(cache, indent=2)
     )
 
+
 def _classify_job_email(email_data: dict) -> dict:
     """Classify one job-search email using an LLM."""
-    client = OpenAI()
+    client = OpenAI(
+        timeout=30.0,
+        max_retries=0,
+    )
 
     prompt = f"""
 Classify this email into exactly one category.
@@ -838,6 +1039,9 @@ From: {email_data.get("from", "")}
 Subject: {email_data.get("subject", "")}
 Snippet: {email_data.get("snippet", "")}
 
+Full email body:
+{email_data.get("body", "")}
+
 Return JSON only:
 
 {{
@@ -845,13 +1049,28 @@ Return JSON only:
   "confidence": 0.0,
   "reason": "short explanation"
 }}
-
 """
 
-    response = client.responses.create(
-        model=OPENAI_MODEL,
-        input=prompt,
-    )
+    last_error = None
+
+    for attempt in range(1, 4):
+        try:
+            response = client.responses.create(
+                model=OPENAI_MODEL,
+                input=prompt,
+            )
+            break
+
+        except (APIConnectionError, APITimeoutError, RateLimitError) as error:
+            last_error = error
+
+            if attempt == 3:
+                raise
+
+            time.sleep(5 * attempt)
+
+    else:
+        raise last_error
 
     text = response.output_text.strip()
 
@@ -864,7 +1083,9 @@ Return JSON only:
             "reason": "classifier_invalid_json",
         }
 
-    return result    
+    return result
+
+
 
 def _gmail_message_ids_for_phrase(
     service,
@@ -974,9 +1195,14 @@ def _count_job_search_emails_ai_between(
 
         if message_id in cache:
             classification = cache[message_id]
+       
         else:
             classification = _classify_job_email(email_data)
             cache[message_id] = classification
+
+            # Save immediately so completed classifications survive
+            # a network/API failure.
+            _save_job_search_cache(cache)
             cache_changed = True
 
         label = classification.get("label", "OTHER")
@@ -999,8 +1225,10 @@ def _count_job_search_emails_ai_between(
         classified_messages.append(
             {
                 "id": message_id,
+                "thread_id": email_data.get("thread_id", ""),
                 "subject": email_data["subject"],
                 "from": email_data["from"],
+                "reply_to": email_data.get("reply_to", ""),
                 "label": label,
                 "confidence": classification.get("confidence"),
                 "reason": classification.get("reason"),
@@ -1378,4 +1606,7 @@ TOOLS = {
     "format_job_search_dashboard": format_job_search_dashboard,
     "email_job_search_dashboard": email_job_search_dashboard,
     "get_job_search_quality_report": get_job_search_quality_report,
+    "get_replyable_rejections": get_replyable_rejections,
+    "send_rejection_reply": send_rejection_reply,
+    "send_all_replyable_rejections": send_all_replyable_rejections,
 }
