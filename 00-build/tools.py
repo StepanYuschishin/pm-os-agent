@@ -26,6 +26,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from dotenv import load_dotenv
+from email.utils import parsedate_to_datetime
 load_dotenv(Path(__file__).parent / ".env")
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1187,23 +1188,53 @@ def _count_job_search_emails_ai_between(
     cache = _load_job_search_cache()
     cache_changed = False
 
+    
+
     for message_id in candidate_ids:
-        email_data = _get_gmail_message_summary(
-            service,
-            message_id,
-        )
+        cached_record = cache.get(message_id)
 
-        if message_id in cache:
-            classification = cache[message_id]
-       
+        if cached_record and cached_record.get("subject") is not None:
+            email_data = {
+                "id": message_id,
+                "thread_id": cached_record.get("thread_id", ""),
+                "date": cached_record.get("date", ""),
+                "subject": cached_record.get("subject", ""),
+                "from": cached_record.get("from", ""),
+                "reply_to": cached_record.get("reply_to", ""),
+                "snippet": cached_record.get("snippet", ""),
+                "body": "",
+            }
+
+            classification = {
+                "label": cached_record.get("label", "OTHER"),
+                "confidence": cached_record.get("confidence"),
+                "reason": cached_record.get("reason"),
+            }
+
         else:
-            classification = _classify_job_email(email_data)
-            cache[message_id] = classification
+            email_data = _get_gmail_message_summary(
+                service,
+                message_id,
+            )
 
-            # Save immediately so completed classifications survive
-            # a network/API failure.
+            classification = _classify_job_email(email_data)
+
+            cache[message_id] = {
+                "label": classification.get("label", "OTHER"),
+                "confidence": classification.get("confidence"),
+                "reason": classification.get("reason"),
+                "thread_id": email_data.get("thread_id", ""),
+                "date": email_data.get("date", ""),
+                "subject": email_data.get("subject", ""),
+                "from": email_data.get("from", ""),
+                "reply_to": email_data.get("reply_to", ""),
+                "snippet": email_data.get("snippet", ""),
+            }
+
             _save_job_search_cache(cache)
             cache_changed = True
+
+
 
         label = classification.get("label", "OTHER")
 
@@ -1226,6 +1257,7 @@ def _count_job_search_emails_ai_between(
             {
                 "id": message_id,
                 "thread_id": email_data.get("thread_id", ""),
+                "date": email_data.get("date", ""),
                 "subject": email_data["subject"],
                 "from": email_data["from"],
                 "reply_to": email_data.get("reply_to", ""),
@@ -1239,10 +1271,10 @@ def _count_job_search_emails_ai_between(
         _save_job_search_cache(cache)
 
     return {
-        **counts,
-        "candidate_messages": len(candidate_ids),
-        "classified_messages": classified_messages,
-        "classification_method": "llm_semantic",
+            **counts,
+            "candidate_messages": len(candidate_ids),
+            "classified_messages": classified_messages,
+            "classification_method": "llm_semantic",
     }
 
 def _get_job_email_candidates_between(
@@ -1449,10 +1481,8 @@ def get_job_search_quality_report(
 def get_job_search_dashboard(
     start_date: str = "2026-06-22",
 ) -> dict:
-    """Build an on-demand job-search dashboard from Gmail.
+    """Build dashboard from one Gmail/AI snapshot instead of rescanning Gmail."""
 
-    Gmail access remains strictly read-only.
-    """
     abu_dhabi_timezone = timezone(timedelta(hours=4))
 
     try:
@@ -1467,58 +1497,114 @@ def get_job_search_dashboard(
         }
 
     now = datetime.now(abu_dhabi_timezone)
-    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today = now.replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
     yesterday = today - timedelta(days=1)
     seven_days_ago = today - timedelta(days=7)
 
     service = _get_gmail_service()
 
-    totals = _count_job_search_emails_ai_between(
+    # ONE full Gmail/AI pass only.
+    snapshot = _count_job_search_emails_ai_between(
         service,
         baseline_date,
         now,
     )
 
-    yesterday_metrics = _count_job_search_emails_ai_between(
-        service,
-        yesterday,
-        today,
-    )
+    yesterday_counts = {
+        "applications_submitted": 0,
+        "rejections": 0,
+        "interviews": 0,
+        "recruiter_replies": 0,
+        "other": 0,
+    }
 
-    last_7_days_metrics = _count_job_search_emails_ai_between(
-        service,
-        seven_days_ago,
-        now,
-    )
+    last_7_days_counts = {
+        "applications_submitted": 0,
+        "rejections": 0,
+        "interviews": 0,
+        "recruiter_replies": 0,
+        "other": 0,
+    }
+
+    label_to_key = {
+        "APPLICATION_CONFIRMATION": "applications_submitted",
+        "REJECTION": "rejections",
+        "INTERVIEW": "interviews",
+        "RECRUITER_REPLY": "recruiter_replies",
+        "OTHER": "other",
+    }
+
+    for message in snapshot["classified_messages"]:
+        raw_date = message.get("date", "")
+
+        if not raw_date:
+            continue
+
+        try:
+            message_datetime = parsedate_to_datetime(raw_date)
+
+            if message_datetime.tzinfo is None:
+                message_datetime = message_datetime.replace(
+                    tzinfo=timezone.utc
+                )
+
+            message_datetime = message_datetime.astimezone(
+                abu_dhabi_timezone
+            )
+        except (TypeError, ValueError, OverflowError):
+            continue
+
+        key = label_to_key.get(
+            message.get("label", "OTHER"),
+            "other",
+        )
+
+        if yesterday <= message_datetime < today:
+            yesterday_counts[key] += 1
+
+        if seven_days_ago <= message_datetime <= now:
+            last_7_days_counts[key] += 1
 
     return {
         "dashboard": "Cortex Job Search Dashboard",
         "generated_at": now.isoformat(),
         "timezone": "Asia/Dubai",
         "since": start_date,
+
         "totals": {
-            "applications_submitted": totals["applications_submitted"],
-            "rejections": totals["rejections"],
+            "applications_submitted":
+                snapshot["applications_submitted"],
+            "rejections":
+                snapshot["rejections"],
         },
+
         "yesterday": {
             "date": yesterday.strftime("%Y-%m-%d"),
-            **yesterday_metrics,
+            **yesterday_counts,
         },
+
         "last_7_days": {
             "from": seven_days_ago.strftime("%Y-%m-%d"),
             "to": now.strftime("%Y-%m-%d"),
-            **last_7_days_metrics,
+            **last_7_days_counts,
         },
-        "access": "read_only",
+
+        "access": "gmail_readonly_and_send",
+
         "note": (
-            "Counts use unique Gmail message IDs and cached AI semantic "
-            "classification."
+            "Dashboard uses one Gmail snapshot and cached AI semantic "
+            "classification; time-window metrics are calculated locally."
         ),
     }
 
-
 def format_job_search_dashboard(
     start_date: str = "2026-06-22",
+    automation_stats: dict | None = None,
 ) -> str:
     """Return the job-search dashboard as readable text."""
     dashboard = get_job_search_dashboard(start_date)
@@ -1529,6 +1615,18 @@ def format_job_search_dashboard(
     totals = dashboard["totals"]
     yesterday = dashboard["yesterday"]
     last_7_days = dashboard["last_7_days"]
+
+    automation_stats = automation_stats or {}
+
+    replyable_found = automation_stats.get(
+        "discovered_replyable",
+        0,
+    )
+
+    replies_sent = automation_stats.get(
+        "sent",
+        0,
+    )
 
     return (
         "CORTEX JOB SEARCH DASHBOARD\n"
@@ -1543,13 +1641,21 @@ def format_job_search_dashboard(
         f"{last_7_days['to']}):\n"
         f"{last_7_days['applications_submitted']} applications\n"
         f"{last_7_days['rejections']} rejections\n\n"
-        "Access: Gmail read-only\n"
-        "Classification: AI semantic + cache, unique messages"
+
+        "AUTOMATION\n"
+        f"Replyable rejections found: {replyable_found}\n"
+        f"Rejection replies sent this run: {replies_sent}\n\n"
+
+        "System:\n"
+        "Gmail access: Read + Send\n"
+        "Classification: AI semantic + local cache\n"
+        "Duplicate protection: message + thread level"
     )   
 
 def email_job_search_dashboard(
     recipient: str,
     start_date: str = "2026-06-22",
+    automation_stats: dict | None = None,
 ) -> dict:
     """Generate the dashboard and email it to the selected recipient."""
     recipient = str(recipient or "").strip()
@@ -1557,7 +1663,10 @@ def email_job_search_dashboard(
     if not recipient or "@" not in recipient:
         return {"error": "valid_recipient_required"}
 
-    dashboard_text = format_job_search_dashboard(start_date)
+    dashboard_text = format_job_search_dashboard(
+        start_date,
+        automation_stats=automation_stats,
+    )
     subject = "Cortex Job Search Dashboard"
 
     message = EmailMessage()
